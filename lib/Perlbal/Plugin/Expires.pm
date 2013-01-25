@@ -3,15 +3,13 @@ package Perlbal::Plugin::Expires;
 use strict;
 use warnings;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 use Perlbal;
 use HTTP::Date;
 
-my %__expires;
-
 sub load {
-    my $class = @_;
+    my $class = shift;
 
     Perlbal::register_global_hook('manage_command.expires' => \&_config_expires);
 
@@ -19,7 +17,8 @@ sub load {
 }
 
 sub register {
-    my ($class, $svc) = @_;
+    my $class = shift;
+    my ($svc) = @_;
 
     die "Expires plugin must run as web_server role\n"
         unless $svc && $svc->{role} eq 'web_server';
@@ -31,13 +30,19 @@ sub register {
     return 1;
 }
 
-sub unload { 1 }
+sub unload {
+    my $class = shift;
+    
+    Perlbal::unregister_global_hook('manage_command.expires');
+
+    return 1;
+}
 
 sub unregister {
-    my ($class, $svc) = @_;
+    my $class = shift;
+    my ($svc) = @_;
 
     $svc->unregister_hooks('Expires');
-    delete $__expires{$svc->{name}};
 
     return 1;
 }
@@ -56,9 +61,12 @@ sub _config_expires {
     my $sec = eval { _expires_to_sec($expires) }
         or return $mc->err($@);
 
-    $__expires{$service}{$type} = {
+    my $svc = Perlbal->service($service);
+    my $config = $svc->{extra_config}->{__expires} ||= {};
+    $config->{$type} = {
         base => $base,
         time => $sec,
+        orig => $expires,
     };
 
     return $mc->ok;
@@ -70,10 +78,11 @@ sub _set_expires {
     my Perlbal::HTTPHeaders    $res    = $client->{res_headers} or return;
 
     return if $res->response_code ne '200';
-    return unless exists $__expires{$svc->{name}};
+    return unless exists $svc->{extra_config}{__expires};
 
     my $type    = $res->header('Content-Type') || 'default';
-    my $expires = $__expires{$svc->{name}}{$type} || $__expires{$svc->{name}}{default}
+    my $config  = $svc->{extra_config}{__expires};
+    my $expires = $config->{$type} || $config->{default}
         or return;
 
     my $base = _base_time($expires->{base}, $res->header('Last-Modified'));
@@ -124,6 +133,20 @@ sub _expires_to_sec {
     return $sec;
 }
 
+sub dumpconfig {
+    my $class = shift;
+    my ($svc) = @_;
+
+    my $expires = $svc->{extra_config}->{__expires} or return;
+
+    my @config;
+    while (my ($type, $expire) = each %$expires) {
+        push @config, sprintf(qq{Expires $type = %s plug %s}, $expire->{base}, $expire->{orig});
+    }
+
+    return @config;
+}
+
 1;
 __END__
 
@@ -154,22 +177,24 @@ of perlbal webserver the same way as Apache mode_expires.
 
   Expires [service] <type> = <base> plus (<num> <unit>)+
 
-=head2 service
+=over 4
 
-You can specify service name explicily to apply expires.
+=item * service
+
+You can specify service name explicitly to apply expires.
 Default is last created service.
 
-=head2 type
+=item * type
 
-Content-Type. Supported MIME Types on Perlbal web server is listed in $Perlbal::ClientHTTPBase::MimeType.
+Content-Type. Supported MIME Types on Perlbal web server are listed in $Perlbal::ClientHTTPBase::MimeType.
 
-=head2 base
+=item * base
 
-B<access> or B<now> (same as access) or B<modification>.
+B<access>, B<now> (same as access) or B<modification>.
 
-=head2 (num unit)+
+=item * (num unit)+
 
-Dtetime string. B<num> should be integer value and B<unit> is one of
+Datetime string. B<num> should be integer value and B<unit> is one of
 
   * years
   * months
@@ -185,6 +210,8 @@ e.g)
 
   * 10 years
   * 7 days 1 hour 30 minutes 45 seconds
+
+=back
 
 =head1 SEE ALSO
 
